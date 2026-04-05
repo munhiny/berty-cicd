@@ -1,0 +1,233 @@
+name: Security Audit
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: 'Project language: node, go, python, or auto (detects from files)'
+        required: false
+        type: string
+        default: 'auto'
+      audit-level:
+        description: 'Severity threshold (low, moderate, high, critical)'
+        required: false
+        type: string
+        default: 'high'
+      fail-on-vulnerabilities:
+        description: 'Fail the workflow if vulnerabilities are found'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  detect:
+    runs-on: self-hosted
+    outputs:
+      languages: ${{ steps.detect.outputs.languages }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect project languages
+        id: detect
+        run: |
+          LANGS="[]"
+          if [ "${{ inputs.language }}" != "auto" ]; then
+            LANGS="[\"${{ inputs.language }}\"]"
+          else
+            LANGS="["
+            SEP=""
+            [ -f package.json ] && LANGS="${LANGS}${SEP}\"node\"" && SEP=","
+            [ -f go.mod ] && LANGS="${LANGS}${SEP}\"go\"" && SEP=","
+            [ -f uv.lock ] || [ -f pyproject.toml ] || [ -f requirements.txt ] && LANGS="${LANGS}${SEP}\"python\"" && SEP=","
+            LANGS="${LANGS}]"
+          fi
+          echo "languages=${LANGS}" >> "$GITHUB_OUTPUT"
+          echo "Detected languages: ${LANGS}"
+
+  node-audit:
+    needs: detect
+    if: contains(needs.detect.outputs.languages, 'node')
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: npm audit
+        run: |
+          set +e
+          AUDIT_OUTPUT=$(npm audit --audit-level=${{ inputs.audit-level }} 2>&1)
+          AUDIT_EXIT=$?
+          set -e
+
+          echo "$AUDIT_OUTPUT"
+          echo "### Node.js Security Audit" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$AUDIT_OUTPUT" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          if [ $AUDIT_EXIT -ne 0 ] && [ "${{ inputs.fail-on-vulnerabilities }}" = "true" ]; then
+            echo "::error::npm audit found vulnerabilities at or above ${{ inputs.audit-level }} level"
+            exit 1
+          fi
+
+  go-audit:
+    needs: detect
+    if: contains(needs.detect.outputs.languages, 'go')
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Go module vulnerabilities
+        run: |
+          echo "### Go Security Audit" >> $GITHUB_STEP_SUMMARY
+
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          set +e
+          VULN_OUTPUT=$(govulncheck ./... 2>&1)
+          VULN_EXIT=$?
+          set -e
+
+          echo "$VULN_OUTPUT"
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$VULN_OUTPUT" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          if [ $VULN_EXIT -ne 0 ] && [ "${{ inputs.fail-on-vulnerabilities }}" = "true" ]; then
+            echo "::error::govulncheck found vulnerabilities"
+            exit 1
+          fi
+
+      - name: Verify go.sum integrity
+        run: |
+          go mod verify
+          go mod tidy -diff 2>&1 || echo "::warning::go.mod/go.sum not tidy — run 'go mod tidy'"
+
+  python-audit:
+    needs: detect
+    if: contains(needs.detect.outputs.languages, 'python')
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          if [ -f uv.lock ]; then
+            uv sync --frozen --group dev
+          elif [ -f pyproject.toml ]; then
+            uv sync --group dev
+          elif [ -f requirements.txt ]; then
+            uv venv
+            uv pip install -r requirements.txt
+          fi
+
+      - name: Lint — ruff check
+        run: |
+          echo "### Ruff Lint" >> $GITHUB_STEP_SUMMARY
+          set +e
+          LINT_OUTPUT=$(uv run ruff check . 2>&1)
+          LINT_EXIT=$?
+          set -e
+
+          echo "$LINT_OUTPUT"
+          if [ $LINT_EXIT -ne 0 ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$LINT_OUTPUT" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "::error::ruff check found lint errors"
+            exit 1
+          else
+            echo "No lint issues found :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Format — ruff format check
+        run: |
+          echo "### Ruff Format" >> $GITHUB_STEP_SUMMARY
+          set +e
+          FORMAT_OUTPUT=$(uv run ruff format --check . 2>&1)
+          FORMAT_EXIT=$?
+          set -e
+
+          echo "$FORMAT_OUTPUT"
+          if [ $FORMAT_EXIT -ne 0 ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$FORMAT_OUTPUT" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "::error::ruff format found unformatted files — run 'ruff format .'"
+            exit 1
+          else
+            echo "All files formatted :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Import sorting — isort check
+        run: |
+          if uv run python -c "import isort" 2>/dev/null; then
+            echo "### isort" >> $GITHUB_STEP_SUMMARY
+            set +e
+            ISORT_OUTPUT=$(uv run isort --check-only --diff . 2>&1)
+            ISORT_EXIT=$?
+            set -e
+
+            echo "$ISORT_OUTPUT"
+            if [ $ISORT_EXIT -ne 0 ]; then
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "$ISORT_OUTPUT" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "::error::isort found unsorted imports — run 'isort .'"
+              exit 1
+            else
+              echo "Imports sorted :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "isort not in dev dependencies, skipping"
+          fi
+
+      - name: Tests — pytest
+        run: |
+          echo "### Tests" >> $GITHUB_STEP_SUMMARY
+          if uv run python -c "import pytest" 2>/dev/null; then
+            set +e
+            uv run pytest
+            TEST_EXIT=$?
+            set -e
+
+            if [ $TEST_EXIT -ne 0 ]; then
+              echo "Tests failed :x:" >> $GITHUB_STEP_SUMMARY
+              exit 1
+            else
+              echo "All tests passed :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "pytest not in dev dependencies, skipping"
+            echo "No tests configured" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Security — pip-audit
+        run: |
+          echo "### Python Security Audit" >> $GITHUB_STEP_SUMMARY
+
+          uv tool install pip-audit
+          set +e
+          AUDIT_OUTPUT=$(pip-audit 2>&1)
+          AUDIT_EXIT=$?
+          set -e
+
+          echo "$AUDIT_OUTPUT"
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$AUDIT_OUTPUT" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          if [ $AUDIT_EXIT -ne 0 ] && [ "${{ inputs.fail-on-vulnerabilities }}" = "true" ]; then
+            echo "::error::pip-audit found vulnerabilities"
+            exit 1
+          fi
+
+      - name: Lockfile integrity
+        run: |
+          if [ -f uv.lock ]; then
+            uv lock --check 2>&1 || echo "::warning::uv.lock out of sync — run 'uv lock'"
+          fi

@@ -1,0 +1,16 @@
+# scrapEngine2/.github/workflows/ci.yml
+name: CI — Scrape Engine
+
+on:
+  push:
+    branches: [main, ed_branch]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    uses: munhiny/berty-cicd/.github/workflows/build-and-push.yml@main
+    with:
+      image-name: scrape-engine
+      language: node
+      audit-level: high

@@ -1,0 +1,16 @@
+# Example for a Python project using uv
+name: CI — Python App
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    uses: munhiny/berty-cicd/.github/workflows/build-and-push.yml@main
+    with:
+      image-name: my-python-app
+      language: python
+      audit-level: high

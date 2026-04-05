@@ -1,0 +1,16 @@
+# task_roulette/.github/workflows/ci.yml
+name: CI — Task Roulette
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    uses: munhiny/berty-cicd/.github/workflows/build-and-push.yml@main
+    with:
+      image-name: task-roulette
+      language: go
+      audit-level: high

@@ -1,0 +1,35 @@
+name: Deploy and Notify
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: 'Image that was deployed'
+        required: true
+        type: string
+      registry:
+        description: 'Container registry'
+        required: false
+        type: string
+        default: 'registry.local:5000'
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Verify image exists in registry
+        run: |
+          curl -sf http://${{ inputs.registry }}/v2/${{ inputs.image-name }}/tags/list | jq .
+
+      - name: Trigger Flux reconciliation
+        run: |
+          flux reconcile source git flux-system
+          echo "Waiting for kustomizations to reconcile..."
+          sleep 10
+          flux get kustomizations
+
+      - name: Verify deployment
+        run: |
+          echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image:** \`${{ inputs.registry }}/${{ inputs.image-name }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Flux:** Reconciliation triggered" >> $GITHUB_STEP_SUMMARY
