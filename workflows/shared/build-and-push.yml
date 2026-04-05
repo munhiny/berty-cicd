@@ -3,6 +3,10 @@ name: Build and Push Container
 on:
   workflow_call:
     inputs:
+      runner-label:
+        description: 'Self-hosted runner label (must match ARC scale set name)'
+        required: true
+        type: string
       image-name:
         description: 'Image name (e.g. scrape-engine)'
         required: true
@@ -18,12 +22,12 @@ on:
         type: string
         default: './Dockerfile'
       registry:
-        description: 'Container registry'
+        description: 'Container registry (use IP for DinD compatibility)'
         required: false
         type: string
-        default: 'registry.local:5000'
+        default: '192.168.4.103:5000'
       language:
-        description: 'Project language for security audit: node, go, python, or auto'
+        description: 'Project language: node, go, python, auto, or comma-separated (e.g. go,node)'
         required: false
         type: string
         default: 'auto'
@@ -37,31 +41,32 @@ on:
         required: false
         type: boolean
         default: false
-      platforms:
-        description: 'Target platforms (e.g. linux/amd64,linux/arm64)'
+      node-working-directory:
+        description: 'Working directory for Node.js audit (e.g. web/ for monorepos)'
         required: false
         type: string
-        default: 'linux/amd64'
+        default: '.'
 
 jobs:
   audit:
     if: ${{ !inputs.skip-audit }}
     uses: ./.github/workflows/security-audit.yml
     with:
+      runner-label: ${{ inputs.runner-label }}
       language: ${{ inputs.language }}
       audit-level: ${{ inputs.audit-level }}
+      node-working-directory: ${{ inputs.node-working-directory }}
 
   build:
     needs: [audit]
     if: always() && (needs.audit.result == 'success' || needs.audit.result == 'skipped')
-    runs-on: self-hosted
+    runs-on: ${{ inputs.runner-label }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Build image
         run: |
           docker build \
-            --platform ${{ inputs.platforms }} \
             -t ${{ inputs.registry }}/${{ inputs.image-name }}:latest \
             -t ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }} \
             -f ${{ inputs.dockerfile }} \
@@ -72,10 +77,6 @@ jobs:
           docker push ${{ inputs.registry }}/${{ inputs.image-name }}:latest
           docker push ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }}
 
-      - name: Trigger Flux reconciliation
-        run: |
-          flux reconcile source git flux-system || echo "Flux reconcile skipped"
-
       - name: Summary
         run: |
           echo "### Build Summary" >> $GITHUB_STEP_SUMMARY
@@ -83,5 +84,4 @@ jobs:
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Image | \`${{ inputs.registry }}/${{ inputs.image-name }}:latest\` |" >> $GITHUB_STEP_SUMMARY
           echo "| SHA | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Platform | \`${{ inputs.platforms }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Audit | ${{ needs.audit.result }} |" >> $GITHUB_STEP_SUMMARY

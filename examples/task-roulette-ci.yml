@@ -1,4 +1,4 @@
-# task_roulette/.github/workflows/ci.yml
+# In: task_roulette/.github/workflows/ci.yml
 name: CI — Task Roulette
 
 on:
@@ -8,9 +8,12 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  ci:
     uses: munhiny/berty-cicd/.github/workflows/build-and-push.yml@main
     with:
+      runner-label: arc-runner-task-roulette
       image-name: task-roulette
-      language: go
+      language: go,node
+      node-working-directory: web
+      dockerfile: deploy/Dockerfile
       audit-level: high

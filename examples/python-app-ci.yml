@@ -8,9 +8,10 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  ci:
     uses: munhiny/berty-cicd/.github/workflows/build-and-push.yml@main
     with:
+      runner-label: arc-runner-my-app
       image-name: my-python-app
       language: python
       audit-level: high

@@ -3,6 +3,10 @@ name: Security Audit
 on:
   workflow_call:
     inputs:
+      runner-label:
+        description: 'Self-hosted runner label (must match ARC scale set name)'
+        required: true
+        type: string
       language:
         description: 'Project language: node, go, python, or auto (detects from files)'
         required: false
@@ -18,10 +22,15 @@ on:
         required: false
         type: boolean
         default: true
+      node-working-directory:
+        description: 'Working directory for Node.js projects (e.g. web/ for monorepos)'
+        required: false
+        type: string
+        default: '.'
 
 jobs:
   detect:
-    runs-on: self-hosted
+    runs-on: ${{ inputs.runner-label }}
     outputs:
       languages: ${{ steps.detect.outputs.languages }}
     steps:
@@ -30,26 +39,36 @@ jobs:
       - name: Detect project languages
         id: detect
         run: |
-          LANGS="[]"
+          LANGS="["
+          SEP=""
           if [ "${{ inputs.language }}" != "auto" ]; then
-            LANGS="[\"${{ inputs.language }}\"]"
+            # Support comma-separated languages (e.g. "go,node")
+            for lang in $(echo "${{ inputs.language }}" | tr ',' ' '); do
+              LANGS="${LANGS}${SEP}\"${lang}\""
+              SEP=","
+            done
           else
-            LANGS="["
-            SEP=""
-            [ -f package.json ] && LANGS="${LANGS}${SEP}\"node\"" && SEP=","
+            [ -f package.json ] || [ -f "${{ inputs.node-working-directory }}/package.json" ] && LANGS="${LANGS}${SEP}\"node\"" && SEP=","
             [ -f go.mod ] && LANGS="${LANGS}${SEP}\"go\"" && SEP=","
             [ -f uv.lock ] || [ -f pyproject.toml ] || [ -f requirements.txt ] && LANGS="${LANGS}${SEP}\"python\"" && SEP=","
-            LANGS="${LANGS}]"
           fi
+          LANGS="${LANGS}]"
           echo "languages=${LANGS}" >> "$GITHUB_OUTPUT"
           echo "Detected languages: ${LANGS}"
 
   node-audit:
     needs: detect
     if: contains(needs.detect.outputs.languages, 'node')
-    runs-on: self-hosted
+    runs-on: ${{ inputs.runner-label }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.node-working-directory }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
@@ -72,12 +91,24 @@ jobs:
             exit 1
           fi
 
+      - name: Lint (if eslint configured)
+        run: |
+          if grep -q '"lint"' package.json 2>/dev/null; then
+            npm run lint
+          else
+            echo "No lint script found, skipping"
+          fi
+
   go-audit:
     needs: detect
     if: contains(needs.detect.outputs.languages, 'go')
-    runs-on: self-hosted
+    runs-on: ${{ inputs.runner-label }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
 
       - name: Check Go module vulnerabilities
         run: |
@@ -104,10 +135,13 @@ jobs:
           go mod verify
           go mod tidy -diff 2>&1 || echo "::warning::go.mod/go.sum not tidy — run 'go mod tidy'"
 
+      - name: Run tests
+        run: go test ./...
+
   python-audit:
     needs: detect
     if: contains(needs.detect.outputs.languages, 'python')
-    runs-on: self-hosted
+    runs-on: ${{ inputs.runner-label }}
     steps:
       - uses: actions/checkout@v4
 
@@ -141,7 +175,7 @@ jobs:
             echo "::error::ruff check found lint errors"
             exit 1
           else
-            echo "No lint issues found :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+            echo "No lint issues found" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Format — ruff format check
@@ -160,7 +194,7 @@ jobs:
             echo "::error::ruff format found unformatted files — run 'ruff format .'"
             exit 1
           else
-            echo "All files formatted :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+            echo "All files formatted" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Import sorting — isort check
@@ -180,7 +214,7 @@ jobs:
               echo "::error::isort found unsorted imports — run 'isort .'"
               exit 1
             else
-              echo "Imports sorted :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+              echo "Imports sorted" >> $GITHUB_STEP_SUMMARY
             fi
           else
             echo "isort not in dev dependencies, skipping"
@@ -196,10 +230,10 @@ jobs:
             set -e
 
             if [ $TEST_EXIT -ne 0 ]; then
-              echo "Tests failed :x:" >> $GITHUB_STEP_SUMMARY
+              echo "Tests failed" >> $GITHUB_STEP_SUMMARY
               exit 1
             else
-              echo "All tests passed :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+              echo "All tests passed" >> $GITHUB_STEP_SUMMARY
             fi
           else
             echo "pytest not in dev dependencies, skipping"
