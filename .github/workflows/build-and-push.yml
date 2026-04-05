@@ -27,7 +27,7 @@ on:
         type: string
         default: '192.168.4.103:5000'
       language:
-        description: 'Project language: node, go, python, auto, or comma-separated (e.g. go,node)'
+        description: 'Comma-separated languages: node, go, python, or auto'
         required: false
         type: string
         default: 'auto'
@@ -42,7 +42,7 @@ on:
         type: boolean
         default: false
       node-working-directory:
-        description: 'Working directory for Node.js audit (e.g. web/ for monorepos)'
+        description: 'Working directory for Node.js (e.g. web/ for monorepos)'
         required: false
         type: string
         default: '.'
@@ -50,12 +50,111 @@ on:
 jobs:
   audit:
     if: ${{ !inputs.skip-audit }}
-    uses: ./.github/workflows/security-audit.yml
-    with:
-      runner-label: ${{ inputs.runner-label }}
-      language: ${{ inputs.language }}
-      audit-level: ${{ inputs.audit-level }}
-      node-working-directory: ${{ inputs.node-working-directory }}
+    runs-on: ${{ inputs.runner-label }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect languages
+        id: detect
+        run: |
+          LANGS="${{ inputs.language }}"
+          if [ "$LANGS" = "auto" ]; then
+            LANGS=""
+            [ -f package.json ] || [ -f "${{ inputs.node-working-directory }}/package.json" ] && LANGS="${LANGS},node"
+            [ -f go.mod ] && LANGS="${LANGS},go"
+            [ -f uv.lock ] || [ -f pyproject.toml ] || [ -f requirements.txt ] && LANGS="${LANGS},python"
+            LANGS="${LANGS#,}"
+          fi
+          echo "langs=$LANGS" >> "$GITHUB_OUTPUT"
+          echo "Detected languages: $LANGS"
+
+      # --- Node.js ---
+      - uses: actions/setup-node@v4
+        if: contains(steps.detect.outputs.langs, 'node')
+        with:
+          node-version: '22'
+
+      - name: Node — install dependencies
+        if: contains(steps.detect.outputs.langs, 'node')
+        working-directory: ${{ inputs.node-working-directory }}
+        run: npm ci --ignore-scripts
+
+      - name: Node — npm audit
+        if: contains(steps.detect.outputs.langs, 'node')
+        working-directory: ${{ inputs.node-working-directory }}
+        run: npm audit --audit-level=${{ inputs.audit-level }} || true
+
+      - name: Node — lint
+        if: contains(steps.detect.outputs.langs, 'node')
+        working-directory: ${{ inputs.node-working-directory }}
+        run: |
+          if grep -q '"lint"' package.json 2>/dev/null; then
+            npm run lint
+          else
+            echo "No lint script, skipping"
+          fi
+
+      # --- Go ---
+      - uses: actions/setup-go@v5
+        if: contains(steps.detect.outputs.langs, 'go')
+        with:
+          go-version-file: go.mod
+
+      - name: Go — govulncheck
+        if: contains(steps.detect.outputs.langs, 'go')
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./... || true
+
+      - name: Go — verify modules
+        if: contains(steps.detect.outputs.langs, 'go')
+        run: |
+          go mod verify
+          go mod tidy -diff 2>&1 || echo "::warning::go.mod/go.sum not tidy"
+
+      - name: Go — test
+        if: contains(steps.detect.outputs.langs, 'go')
+        run: |
+          # Build frontend first if it exists (needed for go:embed)
+          if [ -f "${{ inputs.node-working-directory }}/package.json" ] && [ "${{ inputs.node-working-directory }}" != "." ]; then
+            cd "${{ inputs.node-working-directory }}" && npm ci && npm run build && cd ..
+          fi
+          go test ./...
+
+      # --- Python ---
+      - name: Python — install uv
+        if: contains(steps.detect.outputs.langs, 'python')
+        uses: astral-sh/setup-uv@v4
+
+      - name: Python — install deps
+        if: contains(steps.detect.outputs.langs, 'python')
+        run: |
+          if [ -f uv.lock ]; then
+            uv sync --frozen --group dev
+          elif [ -f pyproject.toml ]; then
+            uv sync --group dev
+          elif [ -f requirements.txt ]; then
+            uv venv && uv pip install -r requirements.txt
+          fi
+
+      - name: Python — ruff lint + format
+        if: contains(steps.detect.outputs.langs, 'python')
+        run: |
+          uv run ruff check . || true
+          uv run ruff format --check . || true
+
+      - name: Python — pytest
+        if: contains(steps.detect.outputs.langs, 'python')
+        run: |
+          if uv run python -c "import pytest" 2>/dev/null; then
+            uv run pytest
+          fi
+
+      - name: Python — pip-audit
+        if: contains(steps.detect.outputs.langs, 'python')
+        run: |
+          uv tool install pip-audit
+          pip-audit || true
 
   build:
     needs: [audit]
