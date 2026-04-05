@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       image-name:
-        description: 'Image name (e.g. scrape-engine)'
+        description: 'Image name (e.g. my-app)'
         required: true
         type: string
       context:
@@ -25,7 +25,7 @@ on:
         description: 'Container registry (use IP for DinD compatibility)'
         required: false
         type: string
-        default: '192.168.4.103:5000'
+        default: 'localhost:5000'
       language:
         description: 'Comma-separated languages: node, go, python, or auto'
         required: false

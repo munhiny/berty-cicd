@@ -1,4 +1,4 @@
-# Example: Python app CI (using uv)
+# Example: Node.js app CI
 name: CI
 
 on:
@@ -11,7 +11,7 @@ jobs:
   ci:
     uses: <owner>/cicd/.github/workflows/build-and-push.yml@main
     with:
-      runner-label: arc-runner-my-python-app
-      image-name: my-python-app
-      language: python
+      runner-label: arc-runner-my-node-app
+      image-name: my-node-app
+      language: node
       audit-level: high

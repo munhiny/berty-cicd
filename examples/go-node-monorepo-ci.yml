@@ -1,0 +1,19 @@
+# Example: Go + Node monorepo CI (e.g. Go backend with React frontend)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: <owner>/cicd/.github/workflows/build-and-push.yml@main
+    with:
+      runner-label: arc-runner-my-app
+      image-name: my-app
+      language: go,node
+      node-working-directory: web
+      dockerfile: deploy/Dockerfile
+      audit-level: high

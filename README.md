@@ -1,38 +1,34 @@
-# berty-cicd
+# Shared CI/CD Workflows
 
-Centralized CI/CD pipelines for the berty cluster.
-
-## Overview
-
-Shared GitHub Actions workflows for building, testing, and deploying containers to the berty cluster's local registry (`registry.local:5000`). Multi-language security auditing and quality checks.
+Reusable GitHub Actions workflows for multi-language security auditing, container builds, and registry pushes.
 
 ## Structure
 
 ```
 .github/workflows/     Reusable workflows (called by app repos)
-workflows/shared/      Source of truth for shared workflows
+workflows/shared/      Source copies of shared workflows
 examples/              Drop-in CI configs for app repos
-runner/                Self-hosted GitHub Actions runner setup
+runner/                Self-hosted GitHub Actions runner setup (ARC)
 ```
 
 ## Security & Quality Checks
 
-Auto-detects project language or specify explicitly:
+Auto-detects project language or specify explicitly. Supports comma-separated values for monorepos (e.g. `go,node`).
 
 | Language | Security | Lint | Format | Tests |
 |----------|----------|------|--------|-------|
-| Node.js | `npm audit` | — | — | — |
-| Go | `govulncheck` | — | — | — |
-| Python | `pip-audit` | `ruff check` | `ruff format` | `pytest` |
+| Node.js | `npm audit` | `eslint` (if configured) | — | — |
+| Go | `govulncheck` | — | — | `go test` |
+| Python (uv) | `pip-audit` | `ruff check` | `ruff format` | `pytest` |
 
 ### Python pipeline (uv-based)
 
 Reads tool config from `pyproject.toml` (`[tool.ruff]`, `[tool.isort]`, `[tool.pytest]`).
-Installs `--group dev` dependencies so all dev tools (ruff, isort, pytest, etc.) are available.
+Installs `--group dev` dependencies so all dev tools are available.
 
 Pipeline order:
 1. `uv sync --frozen --group dev`
-2. `ruff check .` — lint (pycodestyle, pyflakes, bugbear, simplify, etc.)
+2. `ruff check .` — lint
 3. `ruff format --check .` — formatting
 4. `isort --check-only .` — import sorting (if in dev deps)
 5. `pytest` — tests (if in dev deps)
@@ -41,55 +37,84 @@ Pipeline order:
 
 ## Shared Workflows
 
-### `security-audit.yml`
-Language-appropriate vulnerability scanning + quality checks.
-
 ### `build-and-push.yml`
-Full pipeline: audit → build → push to registry → Flux reconcile.
+
+Full pipeline: language detection → security audit → lint → test → Docker build → push to registry.
+
+**Inputs:**
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `runner-label` | yes | — | Self-hosted runner label (ARC scale set name) |
+| `image-name` | yes | — | Docker image name |
+| `language` | no | `auto` | `node`, `go`, `python`, or comma-separated |
+| `dockerfile` | no | `./Dockerfile` | Dockerfile path |
+| `context` | no | `.` | Docker build context |
+| `registry` | no | `localhost:5000` | Container registry (use IP for DinD) |
+| `audit-level` | no | `high` | npm audit severity threshold |
+| `skip-audit` | no | `false` | Skip audit step |
+| `node-working-directory` | no | `.` | Working dir for Node.js (monorepo support) |
+
+### `security-audit.yml`
+
+Standalone audit workflow (also used internally by `build-and-push.yml`).
 
 ### `deploy-notify.yml`
-Verify image in registry, trigger Flux, report status.
+
+Post-build: verify image in registry, trigger GitOps reconciliation, report status.
 
 ## Usage
 
 In your app repo, create `.github/workflows/ci.yml`:
 
+### Node.js app
 ```yaml
-# Node.js app
 jobs:
-  build:
-    uses: munhiny/berty-cicd/.github/workflows/build-and-push.yml@main
+  ci:
+    uses: <owner>/cicd/.github/workflows/build-and-push.yml@main
     with:
-      image-name: scrape-engine
+      runner-label: arc-runner-my-node-app
+      image-name: my-node-app
       language: node
+```
 
-# Go app
+### Go app
+```yaml
 jobs:
-  build:
-    uses: munhiny/berty-cicd/.github/workflows/build-and-push.yml@main
+  ci:
+    uses: <owner>/cicd/.github/workflows/build-and-push.yml@main
     with:
-      image-name: task-roulette
+      runner-label: arc-runner-my-go-app
+      image-name: my-go-app
       language: go
+```
 
-# Python app (uv + ruff + pytest)
+### Go + Node monorepo
+```yaml
 jobs:
-  build:
-    uses: munhiny/berty-cicd/.github/workflows/build-and-push.yml@main
+  ci:
+    uses: <owner>/cicd/.github/workflows/build-and-push.yml@main
     with:
+      runner-label: arc-runner-my-app
       image-name: my-app
+      language: go,node
+      node-working-directory: web
+      dockerfile: deploy/Dockerfile
+```
+
+### Python app (uv)
+```yaml
+jobs:
+  ci:
+    uses: <owner>/cicd/.github/workflows/build-and-push.yml@main
+    with:
+      runner-label: arc-runner-my-python-app
+      image-name: my-python-app
       language: python
 ```
 
 See `examples/` for complete workflow files.
 
-## App repos
+## Self-hosted Runner
 
-| Repo | Language | Image |
-|------|----------|-------|
-| `scrapEngine2` | Node.js | `scrape-engine` |
-| `task-roulette` | Go | `task-roulette` |
-| `llm-server` | Python | `llm-server` |
-
-## Self-hosted runner
-
-See `runner/README.md` for deploying the GitHub Actions runner on the cluster via ARC.
+See `runner/README.md` for deploying GitHub Actions runners on Kubernetes via ARC (Actions Runner Controller).
