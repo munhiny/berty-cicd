@@ -1,0 +1,228 @@
+name: Sync Image SHA to GitOps Repo
+
+on:
+  workflow_call:
+    inputs:
+      runner-label:
+        description: 'Self-hosted runner label (must match ARC scale set name)'
+        required: true
+        type: string
+      gitops-repo:
+        description: 'GitOps repo to open the sync pull request against, e.g. owner/repo'
+        required: true
+        type: string
+      manifest-path:
+        description: 'Path within the GitOps repo to the manifest containing the image line'
+        required: true
+        type: string
+      image-name:
+        description: 'Image name as it appears in the manifest, e.g. my-app'
+        required: true
+        type: string
+      registry-host:
+        description: 'Registry host prefix as written in the manifest, e.g. registry.local:5000'
+        required: true
+        type: string
+      image-sha:
+        description: 'Full 40-character commit SHA to pin the manifest to'
+        required: false
+        type: string
+        default: ${{ github.sha }}
+    secrets:
+      gitops-token:
+        description: >
+          Fine-grained PAT for the GitOps repo (contents read/write,
+          pull requests read/write). If unset, the sync is skipped with
+          a warning annotation instead of failing the run.
+        required: false
+
+jobs:
+  sync:
+    runs-on: ${{ inputs.runner-label }}
+    steps:
+      - name: Check gitops-token is configured
+        id: token-check
+        env:
+          GITOPS_TOKEN: ${{ secrets.gitops-token }}
+        run: |
+          if [ -z "$GITOPS_TOKEN" ]; then
+            echo "::warning::gitops-token not configured -- image SHA sync skipped; see the sync-image-sha.yml section of the berty-cicd README for setup steps."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout GitOps repo
+        if: steps.token-check.outputs.configured == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops-repo }}
+          token: ${{ secrets.gitops-token }}
+          path: gitops
+          fetch-depth: 0
+
+      - name: Ensure GitHub CLI is available
+        if: steps.token-check.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          if command -v gh >/dev/null 2>&1; then
+            gh --version
+            exit 0
+          fi
+          echo "gh CLI not found on runner -- installing a local copy"
+          GH_VERSION="2.63.2"
+          case "$(uname -m)" in
+            x86_64) ARCH="amd64" ;;
+            aarch64|arm64) ARCH="arm64" ;;
+            *) echo "::error::unsupported architecture $(uname -m) for gh CLI install"; exit 1 ;;
+          esac
+          curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${ARCH}.tar.gz" \
+            -o /tmp/gh.tar.gz
+          mkdir -p /tmp/gh-cli
+          tar -xzf /tmp/gh.tar.gz -C /tmp/gh-cli --strip-components=1
+          echo "/tmp/gh-cli/bin" >> "$GITHUB_PATH"
+
+      - name: Prepare working branch
+        if: steps.token-check.outputs.configured == 'true'
+        id: prepare
+        working-directory: gitops
+        env:
+          IMAGE_NAME: ${{ inputs.image-name }}
+          IMAGE_SHA: ${{ inputs.image-sha }}
+        run: |
+          set -euo pipefail
+
+          if ! [[ "$IMAGE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::image-sha must be a full 40-character commit SHA, got: '$IMAGE_SHA'"
+            exit 1
+          fi
+
+          git fetch origin --prune
+          DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          SHORT_SHA="${IMAGE_SHA:0:12}"
+          BRANCH="k8s/bump-${IMAGE_NAME}-${SHORT_SHA}"
+
+          git checkout -b "$BRANCH" "origin/${DEFAULT_BRANCH}"
+
+          echo "default_branch=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Bump manifest image tag
+        if: steps.token-check.outputs.configured == 'true'
+        id: bump
+        working-directory: gitops
+        env:
+          MANIFEST_PATH: ${{ inputs.manifest-path }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+          REGISTRY_HOST: ${{ inputs.registry-host }}
+          IMAGE_SHA: ${{ inputs.image-sha }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$MANIFEST_PATH" ]; then
+            echo "::error::manifest not found at $MANIFEST_PATH in ${{ inputs.gitops-repo }}"
+            exit 1
+          fi
+
+          escape_regex() { printf '%s' "$1" | sed -e 's/[.[\*^$|]/\\&/g'; }
+          escape_replacement() { printf '%s' "$1" | sed -e 's/[\&|]/\\&/g'; }
+
+          PREFIX="${REGISTRY_HOST}/${IMAGE_NAME}:"
+          ESCAPED_PREFIX=$(escape_regex "$PREFIX")
+          SEARCH_PATTERN="${ESCAPED_PREFIX}[0-9a-f]{40}"
+
+          if ! grep -Eq "$SEARCH_PATTERN" "$MANIFEST_PATH"; then
+            echo "::error::no line matching '${PREFIX}<40-char-sha>' found in $MANIFEST_PATH"
+            exit 1
+          fi
+
+          if grep -Fq "${PREFIX}${IMAGE_SHA}" "$MANIFEST_PATH"; then
+            echo "::notice::$MANIFEST_PATH is already pinned to $IMAGE_SHA -- nothing to sync"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          REPLACEMENT=$(escape_replacement "${PREFIX}${IMAGE_SHA}")
+          sed -i -E "s|${SEARCH_PATTERN}|${REPLACEMENT}|" "$MANIFEST_PATH"
+
+          if git diff --quiet -- "$MANIFEST_PATH"; then
+            echo "::error::edit produced no change in $MANIFEST_PATH -- refusing to open an empty pull request"
+            exit 1
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push branch
+        if: steps.token-check.outputs.configured == 'true' && steps.bump.outputs.changed == 'true'
+        working-directory: gitops
+        env:
+          IMAGE_NAME: ${{ inputs.image-name }}
+          IMAGE_SHA: ${{ inputs.image-sha }}
+          MANIFEST_PATH: ${{ inputs.manifest-path }}
+          BRANCH: ${{ steps.prepare.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "gitops-sync-bot"
+          git config user.email "gitops-sync-bot@users.noreply.github.com"
+          git add "$MANIFEST_PATH"
+          git commit -m "chore(${IMAGE_NAME}): bump image to ${IMAGE_SHA}"
+
+          # The branch name is content-addressed (image name + sha), so it
+          # only ever holds this one mechanical commit. Force-pushing here
+          # replaces a previous attempt at syncing the same sha, it never
+          # discards independent work.
+          git push --force origin "$BRANCH"
+
+      - name: Open or update pull request
+        if: steps.token-check.outputs.configured == 'true' && steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.gitops-token }}
+          GITOPS_REPO: ${{ inputs.gitops-repo }}
+          BRANCH: ${{ steps.prepare.outputs.branch }}
+          DEFAULT_BRANCH: ${{ steps.prepare.outputs.default_branch }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+          IMAGE_SHA: ${{ inputs.image-sha }}
+          MANIFEST_PATH: ${{ inputs.manifest-path }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="${IMAGE_SHA:0:12}"
+          TITLE="chore: bump ${IMAGE_NAME} to ${SHORT_SHA}"
+          BODY="Bumps \`${MANIFEST_PATH}\` to the image built from ${SOURCE_REPO}@${IMAGE_SHA}.
+
+          The tag was pushed to the registry by the producing build before this pull request was opened."
+
+          EXISTING=$(gh pr list --repo "$GITOPS_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            gh pr edit "$EXISTING" --repo "$GITOPS_REPO" --title "$TITLE" --body "$BODY"
+            echo "::notice::updated existing pull request #$EXISTING"
+          else
+            gh pr create --repo "$GITOPS_REPO" --base "$DEFAULT_BRANCH" --head "$BRANCH" --title "$TITLE" --body "$BODY"
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          CONFIGURED: ${{ steps.token-check.outputs.configured }}
+          CHANGED: ${{ steps.bump.outputs.changed }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+          IMAGE_SHA: ${{ inputs.image-sha }}
+          MANIFEST_PATH: ${{ inputs.manifest-path }}
+          GITOPS_REPO: ${{ inputs.gitops-repo }}
+        run: |
+          echo "### Image SHA Sync Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| GitOps repo | \`${GITOPS_REPO}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Manifest | \`${MANIFEST_PATH}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image | \`${IMAGE_NAME}:${IMAGE_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$CONFIGURED" != "true" ]; then
+            echo "| Result | skipped -- gitops-token not configured |" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$CHANGED" = "false" ]; then
+            echo "| Result | skipped -- manifest already at this sha |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| Result | pull request opened or updated |" >> "$GITHUB_STEP_SUMMARY"
+          fi
