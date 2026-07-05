@@ -54,6 +54,7 @@ Full pipeline: language detection → security audit → lint → test → Docke
 | `audit-level` | no | `high` | npm audit severity threshold |
 | `skip-audit` | no | `false` | Skip audit step |
 | `node-working-directory` | no | `.` | Working dir for Node.js (monorepo support) |
+| `go-working-directory` | no | `.` | Working dir for Go, i.e. where `go.mod` lives (multi-image repo support) |
 
 ### `security-audit.yml`
 
