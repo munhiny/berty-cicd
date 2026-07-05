@@ -46,6 +46,11 @@ on:
         required: false
         type: string
         default: '.'
+      go-working-directory:
+        description: 'Working directory for Go (e.g. broker/ for multi-image repos)'
+        required: false
+        type: string
+        default: '.'
 
 jobs:
   audit:
@@ -61,7 +66,7 @@ jobs:
           if [ "$LANGS" = "auto" ]; then
             LANGS=""
             [ -f package.json ] || [ -f "${{ inputs.node-working-directory }}/package.json" ] && LANGS="${LANGS},node"
-            [ -f go.mod ] && LANGS="${LANGS},go"
+            [ -f go.mod ] || [ -f "${{ inputs.go-working-directory }}/go.mod" ] && LANGS="${LANGS},go"
             [ -f uv.lock ] || [ -f pyproject.toml ] || [ -f requirements.txt ] && LANGS="${LANGS},python"
             LANGS="${LANGS#,}"
           fi
@@ -98,22 +103,25 @@ jobs:
       - uses: actions/setup-go@v5
         if: contains(steps.detect.outputs.langs, 'go')
         with:
-          go-version-file: go.mod
+          go-version-file: ${{ inputs.go-working-directory }}/go.mod
 
       - name: Go — govulncheck
         if: contains(steps.detect.outputs.langs, 'go')
+        working-directory: ${{ inputs.go-working-directory }}
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./... || true
 
       - name: Go — verify modules
         if: contains(steps.detect.outputs.langs, 'go')
+        working-directory: ${{ inputs.go-working-directory }}
         run: |
           go mod verify
           go mod tidy -diff 2>&1 || echo "::warning::go.mod/go.sum not tidy"
 
       - name: Go — test
         if: contains(steps.detect.outputs.langs, 'go')
+        working-directory: ${{ inputs.go-working-directory }}
         run: |
           # Build frontend first if it exists (needed for go:embed)
           if [ -f "${{ inputs.node-working-directory }}/package.json" ] && [ "${{ inputs.node-working-directory }}" != "." ]; then

@@ -15,5 +15,6 @@ jobs:
       image-name: my-app
       language: go,node
       node-working-directory: web
+      go-working-directory: .   # set to the subdir holding go.mod for multi-image repos
       dockerfile: deploy/Dockerfile
       audit-level: high
