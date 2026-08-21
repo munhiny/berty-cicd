@@ -36,6 +36,14 @@ on:
         required: false
         type: string
         default: 'high'
+      platforms:
+        description: >
+          Comma-separated target platforms (e.g. linux/amd64,linux/arm64).
+          Empty (default) keeps the plain single-arch docker build. Set it
+          when the image must also run on the arm64 control-plane nodes.
+        required: false
+        type: string
+        default: ''
       skip-audit:
         description: 'Skip security audit'
         required: false
@@ -172,6 +180,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build image
+        if: inputs.platforms == ''
         run: |
           docker build \
             -t ${{ inputs.registry }}/${{ inputs.image-name }}:latest \
@@ -180,9 +189,35 @@ jobs:
             ${{ inputs.context }}
 
       - name: Push image
+        if: inputs.platforms == ''
         run: |
           docker push ${{ inputs.registry }}/${{ inputs.image-name }}:latest
           docker push ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }}
+
+      - name: Set up QEMU
+        if: inputs.platforms != ''
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        if: inputs.platforms != ''
+        uses: docker/setup-buildx-action@v3
+        with:
+          # The cluster registry is plain HTTP; buildx pushes directly from
+          # buildkitd, which needs its own insecure-registry marking.
+          buildkitd-config-inline: |
+            [registry."${{ inputs.registry }}"]
+              http = true
+
+      - name: Build and push image (multi-arch)
+        if: inputs.platforms != ''
+        run: |
+          docker buildx build \
+            --platform ${{ inputs.platforms }} \
+            -t ${{ inputs.registry }}/${{ inputs.image-name }}:latest \
+            -t ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }} \
+            -f ${{ inputs.dockerfile }} \
+            --push \
+            ${{ inputs.context }}
 
       - name: Summary
         run: |
