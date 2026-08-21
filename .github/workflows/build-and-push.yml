@@ -194,10 +194,10 @@ jobs:
           docker push ${{ inputs.registry }}/${{ inputs.image-name }}:latest
           docker push ${{ inputs.registry }}/${{ inputs.image-name }}:${{ github.sha }}
 
-      - name: Set up QEMU
-        if: inputs.platforms != ''
-        uses: docker/setup-qemu-action@v3
-
+      # NOTE: no QEMU setup. The Talos runner kernel has no binfmt_misc,
+      # so emulation cannot register ("no such device"). Multi-arch
+      # callers must use emulation-free Dockerfiles: builder stages pinned
+      # to $BUILDPLATFORM, final stages COPY-only for foreign arches.
       - name: Set up Buildx
         if: inputs.platforms != ''
         uses: docker/setup-buildx-action@v3
