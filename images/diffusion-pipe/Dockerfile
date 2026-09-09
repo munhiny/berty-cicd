@@ -30,9 +30,16 @@ ENV PYTHONUNBUFFERED=1
 # knows about, which is most of the compile time and most of the image size.
 ENV TORCH_CUDA_ARCH_LIST="8.6"
 
+# python3.12-dev is not optional here, despite nothing importing it.
+# Triton JIT-compiles its CUDA driver shim at RUN time - it shells out to gcc
+# on driver.c, which #includes Python.h - so without the headers the first
+# training step dies with:
+#   triton/backends/nvidia/driver.c:9:10: fatal error: Python.h: No such file
+# That happens after the model has loaded and the dataset has been cached, so
+# it costs a full startup to discover. gcc comes from the CUDA devel base.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      python3.12 python3.12-venv python3-pip git ca-certificates \
+      python3.12 python3.12-venv python3.12-dev python3-pip git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # A venv rather than the system interpreter, so the image matches what the Job
@@ -102,6 +109,7 @@ RUN python -c "import torch, torchvision, torchaudio, deepspeed; print('torch', 
  && pip check \
  && test -f /diffusion-pipe/train.py \
  && test -d /diffusion-pipe/submodules/ComfyUI/comfy \
+ && test -f /usr/include/python3.12/Python.h \
  && echo "submodules present: $(ls /diffusion-pipe/submodules | tr '\n' ' ')"
 
 WORKDIR /diffusion-pipe
