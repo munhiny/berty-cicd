@@ -1,0 +1,40 @@
+# Builds the baked diffusion-pipe trainer image.
+#
+# This repository is a workflow library and normally builds nothing. The
+# exception is here because the image has no application code of its own: it is
+# an upstream trainer pinned to a commit plus its dependencies, which is CI
+# tooling rather than a product. Giving it its own repository would mean a new
+# repository and a new ARC runner scale set for one Dockerfile.
+#
+# Path-filtered so ordinary workflow edits in this repo do not trigger a
+# multi-gigabyte build.
+name: Build diffusion-pipe image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'images/diffusion-pipe/**'
+      - '.github/workflows/build-diffusion-pipe.yml'
+  pull_request:
+    paths:
+      - 'images/diffusion-pipe/**'
+      - '.github/workflows/build-diffusion-pipe.yml'
+  # Rebuilds to move DP_REF forward, or to pick up a fresh base image, without
+  # having to touch a file to trigger them.
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-and-push.yml
+    with:
+      runner-label: arc-runner-berty-cicd
+      image-name: diffusion-pipe
+      context: images/diffusion-pipe
+      dockerfile: images/diffusion-pipe/Dockerfile
+      registry: ${{ vars.REGISTRY }}
+      # There is no first-party source here to audit: the image is an upstream
+      # project pinned to a commit plus its published dependencies. The
+      # language auto-detector would find nothing and the audit step would be
+      # a slow no-op on a build that is already long.
+      skip-audit: true
