@@ -45,11 +45,14 @@ RUN pip install --no-cache-dir --upgrade pip
 
 # Fetch ONLY the pinned commit, with no history, and shallow submodules.
 #
-# `git clone --recurse-submodules` pulls this repo's full history plus all 18
-# submodules with theirs. On this runner that transfer is cut by something
-# upstream at about 150 seconds - twice, at 151.1s and 152.4s, which is a
-# timeout rather than packet loss. The repository itself is only ~16MB; the
-# submodule histories are what make the clone long enough to be killed.
+# Shallow because the full tree is ~1.2GB: this repo is only ~16MB but its 9
+# submodules are not. Depth 1 keeps the transfer small and the checkout is
+# still complete.
+#
+# Note this was NOT the cause of the ~150s connection resets seen while
+# building this originally - those were an MTU mismatch in the runner's
+# Docker-in-Docker daemon, fixed separately with --mtu=1450. Shrinking the
+# transfer changed the timing not at all, which is what ruled it out.
 #
 # Fetching a single commit by SHA needs uploadpack.allowReachableSHA1InWant on
 # the server, which GitHub has, so this works without a branch or tag name and
@@ -71,14 +74,23 @@ RUN git init /diffusion-pipe \
 # torch first and from the CUDA 12.6 index, so the requirements resolve against
 # the CUDA build rather than pulling a CPU wheel over the top of it.
 RUN pip install --no-cache-dir \
-      torch torchvision --index-url https://download.pytorch.org/whl/cu126
+      torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
 RUN pip install --no-cache-dir -r /diffusion-pipe/requirements.txt
 
-# Fail the build here rather than at 3am in a training Job: if the import graph
-# is broken, or a CPU-only torch shadowed the CUDA one, this is where it shows.
-RUN python -c "import torch, deepspeed; print('torch', torch.__version__); print('deepspeed', deepspeed.__version__)" \
- && test -f /diffusion-pipe/train.py
+# Fail the build here rather than mid-run: if the import graph is broken, or a
+# CPU-only torch shadowed the CUDA one, this is where it shows.
+#
+# The second command is the one that matters. An earlier version asserted only
+# `import torch, deepspeed`, passed, and shipped an image whose training run
+# then died on `ModuleNotFoundError: No module named 'torchaudio'` - torchaudio
+# was missing from the install and nothing checked for it. Asserting a subset
+# of the imports proves a subset of the program. Running train.py's own --help
+# exercises the real import chain, so a missing dependency fails the build
+# instead of an outage.
+RUN python -c "import torch, torchvision, torchaudio, deepspeed; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| deepspeed', deepspeed.__version__)" \
+ && test -f /diffusion-pipe/train.py \
+ && (cd /diffusion-pipe && python train.py --help > /dev/null)
 
 WORKDIR /diffusion-pipe
 
