@@ -43,9 +43,30 @@ ENV VIRTUAL_ENV=/venv
 
 RUN pip install --no-cache-dir --upgrade pip
 
-RUN git clone --recurse-submodules "${DP_REPO}" /diffusion-pipe \
- && git -C /diffusion-pipe checkout "${DP_REF}" \
- && git -C /diffusion-pipe rev-parse HEAD > /diffusion-pipe/.baked-ref
+# Fetch ONLY the pinned commit, with no history, and shallow submodules.
+#
+# `git clone --recurse-submodules` pulls this repo's full history plus all 18
+# submodules with theirs. On this runner that transfer is cut by something
+# upstream at about 150 seconds - twice, at 151.1s and 152.4s, which is a
+# timeout rather than packet loss. The repository itself is only ~16MB; the
+# submodule histories are what make the clone long enough to be killed.
+#
+# Fetching a single commit by SHA needs uploadpack.allowReachableSHA1InWant on
+# the server, which GitHub has, so this works without a branch or tag name and
+# keeps the pin exact.
+#
+# Timeouts rather than a silent hang: git aborts if throughput stays under
+# 1KB/s for 60s, so a stalled fetch fails the build with a clear error instead
+# of sitting until the job's own limit.
+RUN git init /diffusion-pipe \
+ && cd /diffusion-pipe \
+ && git config http.lowSpeedLimit 1000 \
+ && git config http.lowSpeedTime 60 \
+ && git remote add origin "${DP_REPO}" \
+ && git fetch --depth 1 origin "${DP_REF}" \
+ && git checkout FETCH_HEAD \
+ && git submodule update --init --recursive --depth 1 \
+ && git rev-parse HEAD > /diffusion-pipe/.baked-ref
 
 # torch first and from the CUDA 12.6 index, so the requirements resolve against
 # the CUDA build rather than pulling a CPU wheel over the top of it.
