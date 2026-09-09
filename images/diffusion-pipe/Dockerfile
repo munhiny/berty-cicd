@@ -91,12 +91,22 @@ RUN pip install --no-cache-dir -r /diffusion-pipe/requirements.txt
 # models/z_image.py -> models/base.py -> torchaudio, peft, and (via a sys.path
 # insert in base.py) the ComfyUI submodule. Importing it exercises all of that.
 #
+# utils.common is imported FIRST on purpose. base.py does
+#   sys.path.insert(0, '../submodules/ComfyUI')
+# and ComfyUI ships its own top-level `utils` package, which then shadows
+# diffusion-pipe's - so a cold `import models.z_image` dies on
+# `No module named 'utils.common'`. At runtime that never bites because
+# utils.common is already in sys.modules before base.py runs the insert.
+# Importing it first here reproduces the real order rather than a stricter
+# one the program never actually uses.
+#
 # torchaudio is an undeclared upstream dependency: base.py imports it, but it
 # is absent from requirements.txt and from the README's install line, which
 # says `pip install torch torchvision`. It is installed explicitly above.
 RUN python -c "import torch, torchvision, torchaudio, deepspeed; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| deepspeed', deepspeed.__version__)" \
  && test -f /diffusion-pipe/train.py \
  && cd /diffusion-pipe && python -c "\
+import utils.common, utils.dataset; \
 import models.z_image, models.krea2, models.minimax_h3; \
 print('model modules import cleanly: z_image, krea2, minimax_h3')"
 
