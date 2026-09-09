@@ -45,11 +45,14 @@ RUN pip install --no-cache-dir --upgrade pip
 
 # Fetch ONLY the pinned commit, with no history, and shallow submodules.
 #
-# `git clone --recurse-submodules` pulls this repo's full history plus all 18
-# submodules with theirs. On this runner that transfer is cut by something
-# upstream at about 150 seconds - twice, at 151.1s and 152.4s, which is a
-# timeout rather than packet loss. The repository itself is only ~16MB; the
-# submodule histories are what make the clone long enough to be killed.
+# Shallow because the full tree is ~1.2GB: this repo is only ~16MB but its 9
+# submodules are not. Depth 1 keeps the transfer small and the checkout is
+# still complete.
+#
+# Note this was NOT the cause of the ~150s connection resets seen while
+# building this originally - those were an MTU mismatch in the runner's
+# Docker-in-Docker daemon, fixed separately with --mtu=1450. Shrinking the
+# transfer changed the timing not at all, which is what ruled it out.
 #
 # Fetching a single commit by SHA needs uploadpack.allowReachableSHA1InWant on
 # the server, which GitHub has, so this works without a branch or tag name and
@@ -71,14 +74,35 @@ RUN git init /diffusion-pipe \
 # torch first and from the CUDA 12.6 index, so the requirements resolve against
 # the CUDA build rather than pulling a CPU wheel over the top of it.
 RUN pip install --no-cache-dir \
-      torch torchvision --index-url https://download.pytorch.org/whl/cu126
+      torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 
 RUN pip install --no-cache-dir -r /diffusion-pipe/requirements.txt
 
-# Fail the build here rather than at 3am in a training Job: if the import graph
-# is broken, or a CPU-only torch shadowed the CUDA one, this is where it shows.
-RUN python -c "import torch, deepspeed; print('torch', torch.__version__); print('deepspeed', deepspeed.__version__)" \
- && test -f /diffusion-pipe/train.py
+# Fail the build here rather than mid-run - within what a builder can check.
+#
+# The build runner has no GPU, and the model modules initialise CUDA when they
+# are imported, so `import models.z_image` cannot run here at all: it dies on
+# "Found no NVIDIA driver". That rules out import-testing the model path at
+# build time, however much one would like to.
+#
+# What IS checkable without a GPU, and would have caught the failure that
+# prompted all this:
+#
+#   torchaudio imports fine CPU-only, and a missing torchaudio was the actual
+#   bug - models/base.py imports it while requirements.txt and the upstream
+#   README both omit it, so nothing else would have installed it.
+#
+#   pip check verifies every installed distribution has its own dependencies
+#   satisfied, which catches the general class rather than one package.
+#
+#   The submodule checkout is verified on disk, since a shallow fetch that
+#   silently omitted it would otherwise surface only at run time.
+RUN python -c "import torch, torchvision, torchaudio, deepspeed; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| deepspeed', deepspeed.__version__)" \
+ && python -c "import transformers, diffusers, peft, safetensors, toml, accelerate; print('framework deps import cleanly')" \
+ && pip check \
+ && test -f /diffusion-pipe/train.py \
+ && test -d /diffusion-pipe/submodules/ComfyUI/comfy \
+ && echo "submodules present: $(ls /diffusion-pipe/submodules | tr '\n' ' ')"
 
 WORKDIR /diffusion-pipe
 
