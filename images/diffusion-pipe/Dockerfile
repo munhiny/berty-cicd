@@ -78,37 +78,31 @@ RUN pip install --no-cache-dir \
 
 RUN pip install --no-cache-dir -r /diffusion-pipe/requirements.txt
 
-# Fail the build here rather than mid-run.
+# Fail the build here rather than mid-run - within what a builder can check.
 #
-# Importing the MODEL MODULES is the assertion that matters, and it took two
-# goes to get right. The first version asserted `import torch, deepspeed`,
-# passed, and shipped an image whose run died on `ModuleNotFoundError: No
-# module named 'torchaudio'`. Running `train.py --help` would not have caught
-# it either: train.py's top-level imports are argparse/toml/deepspeed/torch,
-# and model modules are loaded dynamically from the config's `type`, so the
-# dependency chain that actually fails is never touched.
+# The build runner has no GPU, and the model modules initialise CUDA when they
+# are imported, so `import models.z_image` cannot run here at all: it dies on
+# "Found no NVIDIA driver". That rules out import-testing the model path at
+# build time, however much one would like to.
 #
-# models/z_image.py -> models/base.py -> torchaudio, peft, and (via a sys.path
-# insert in base.py) the ComfyUI submodule. Importing it exercises all of that.
+# What IS checkable without a GPU, and would have caught the failure that
+# prompted all this:
 #
-# utils.common is imported FIRST on purpose. base.py does
-#   sys.path.insert(0, '../submodules/ComfyUI')
-# and ComfyUI ships its own top-level `utils` package, which then shadows
-# diffusion-pipe's - so a cold `import models.z_image` dies on
-# `No module named 'utils.common'`. At runtime that never bites because
-# utils.common is already in sys.modules before base.py runs the insert.
-# Importing it first here reproduces the real order rather than a stricter
-# one the program never actually uses.
+#   torchaudio imports fine CPU-only, and a missing torchaudio was the actual
+#   bug - models/base.py imports it while requirements.txt and the upstream
+#   README both omit it, so nothing else would have installed it.
 #
-# torchaudio is an undeclared upstream dependency: base.py imports it, but it
-# is absent from requirements.txt and from the README's install line, which
-# says `pip install torch torchvision`. It is installed explicitly above.
+#   pip check verifies every installed distribution has its own dependencies
+#   satisfied, which catches the general class rather than one package.
+#
+#   The submodule checkout is verified on disk, since a shallow fetch that
+#   silently omitted it would otherwise surface only at run time.
 RUN python -c "import torch, torchvision, torchaudio, deepspeed; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| deepspeed', deepspeed.__version__)" \
+ && python -c "import transformers, diffusers, peft, safetensors, toml, accelerate; print('framework deps import cleanly')" \
+ && pip check \
  && test -f /diffusion-pipe/train.py \
- && cd /diffusion-pipe && python -c "\
-import utils.common, utils.dataset; \
-import models.z_image, models.krea2, models.minimax_h3; \
-print('model modules import cleanly: z_image, krea2, minimax_h3')"
+ && test -d /diffusion-pipe/submodules/ComfyUI/comfy \
+ && echo "submodules present: $(ls /diffusion-pipe/submodules | tr '\n' ' ')"
 
 WORKDIR /diffusion-pipe
 
