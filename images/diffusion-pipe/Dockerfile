@@ -78,19 +78,27 @@ RUN pip install --no-cache-dir \
 
 RUN pip install --no-cache-dir -r /diffusion-pipe/requirements.txt
 
-# Fail the build here rather than mid-run: if the import graph is broken, or a
-# CPU-only torch shadowed the CUDA one, this is where it shows.
+# Fail the build here rather than mid-run.
 #
-# The second command is the one that matters. An earlier version asserted only
-# `import torch, deepspeed`, passed, and shipped an image whose training run
-# then died on `ModuleNotFoundError: No module named 'torchaudio'` - torchaudio
-# was missing from the install and nothing checked for it. Asserting a subset
-# of the imports proves a subset of the program. Running train.py's own --help
-# exercises the real import chain, so a missing dependency fails the build
-# instead of an outage.
+# Importing the MODEL MODULES is the assertion that matters, and it took two
+# goes to get right. The first version asserted `import torch, deepspeed`,
+# passed, and shipped an image whose run died on `ModuleNotFoundError: No
+# module named 'torchaudio'`. Running `train.py --help` would not have caught
+# it either: train.py's top-level imports are argparse/toml/deepspeed/torch,
+# and model modules are loaded dynamically from the config's `type`, so the
+# dependency chain that actually fails is never touched.
+#
+# models/z_image.py -> models/base.py -> torchaudio, peft, and (via a sys.path
+# insert in base.py) the ComfyUI submodule. Importing it exercises all of that.
+#
+# torchaudio is an undeclared upstream dependency: base.py imports it, but it
+# is absent from requirements.txt and from the README's install line, which
+# says `pip install torch torchvision`. It is installed explicitly above.
 RUN python -c "import torch, torchvision, torchaudio, deepspeed; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| deepspeed', deepspeed.__version__)" \
  && test -f /diffusion-pipe/train.py \
- && (cd /diffusion-pipe && python train.py --help > /dev/null)
+ && cd /diffusion-pipe && python -c "\
+import models.z_image, models.krea2, models.minimax_h3; \
+print('model modules import cleanly: z_image, krea2, minimax_h3')"
 
 WORKDIR /diffusion-pipe
 
