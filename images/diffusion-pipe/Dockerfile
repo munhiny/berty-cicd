@@ -19,7 +19,11 @@ FROM nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04
 # Pinned rather than a branch. Moving the trainer forward is then a deliberate
 # rebuild with a new tag, and a run that worked last week cannot fail this week
 # for reasons nobody chose. Override at build time to bump it.
-ARG DP_REF=8f83dbf25d03219df705570ec03e62be04bc402f
+#
+# 334106c (2026-09-28) adds the qwen_image21 model type (Qwen-Image-2.1,
+# text-to-image training only) and moves the ComfyUI submodule to a commit
+# that carries that model's code. requirements.txt is unchanged since 8f83dbf.
+ARG DP_REF=334106c2d0e29131b53d504b80e211942dac147e
 ARG DP_REPO=https://github.com/tdrussell/diffusion-pipe
 
 ENV DEBIAN_FRONTEND=noninteractive
