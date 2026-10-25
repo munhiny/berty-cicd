@@ -1,0 +1,69 @@
+name: Vulnerability check
+
+# Blocks a pull request on high or critical known vulnerabilities in the
+# dependencies that ship (npm without dev dependencies, the uv project without
+# its dev group, hashed or resolved requirements files, reachable Go code).
+# Dev and test findings are printed but do not block unless all-deps is set.
+#
+# The rules live in scripts/check-vulns.py, which this workflow runs from this
+# repository's main branch. The deploy flow runs the same file from main
+# before every push, so the two cannot disagree.
+#
+# Accepted risks go in .vuln-ignore at the caller's repository root:
+#   <advisory id> <expires YYYY-MM-DD> <reason>
+#
+# Caller:
+#   vuln-check:
+#     uses: munhiny/berty-cicd/.github/workflows/vuln-check.yml@main
+#     with:
+#       runner-label: arc-runner-<app>
+
+on:
+  workflow_call:
+    inputs:
+      runner-label:
+        description: 'Self-hosted runner label (must match ARC scale set name)'
+        required: true
+        type: string
+      all-deps:
+        description: 'Let dev and test dependency findings block too'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  vuln-check:
+    runs-on: ${{ inputs.runner-label }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the shared check
+        uses: actions/checkout@v4
+        with:
+          repository: munhiny/berty-cicd
+          ref: main
+          path: .berty-cicd
+
+      - uses: actions/setup-node@v4
+        if: hashFiles('**/package-lock.json') != ''
+        with:
+          node-version: '22'
+
+      - uses: astral-sh/setup-uv@v4
+
+      - uses: actions/setup-go@v5
+        if: hashFiles('**/go.mod') != ''
+        with:
+          go-version: stable
+          cache: false
+
+      - name: check-vulns
+        env:
+          # Raises GitHub's rate limit for the severity lookups by CVE.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          uv run --no-project --python 3.12 .berty-cicd/scripts/check-vulns.py \
+            ${{ inputs.all-deps && '--all-deps' || '' }}

@@ -56,6 +56,38 @@ Full pipeline: language detection → security audit → lint → test → Docke
 | `node-working-directory` | no | `.` | Working dir for Node.js (monorepo support) |
 | `go-working-directory` | no | `.` | Working dir for Go, i.e. where `go.mod` lives (multi-image repo support) |
 
+### `vuln-check.yml`
+The pull request gate for known vulnerabilities. Runs `scripts/check-vulns.py`
+from this repository's main branch against the caller's checkout. It blocks
+on high or critical advisories in dependencies that ship: `npm audit
+--omit=dev` for each `package-lock.json`, the uv project without its dev
+group, hashed requirements locks as written (other requirements files are
+resolved first), and Go code reachable per `govulncheck`. Dev and test
+findings are printed, not blocking, unless `all-deps: true`. pip-audit and
+govulncheck carry no severity, so the script looks each advisory up in OSV
+and GitHub's advisory database; a finding with no known severity blocks.
+
+```yaml
+  vuln-check:
+    uses: munhiny/berty-cicd/.github/workflows/vuln-check.yml@main
+    with:
+      runner-label: arc-runner-my-app
+```
+
+Accepted risks go in `.vuln-ignore` at the repository root, one per line,
+with an expiry after which the line stops applying:
+
+```
+GHSA-xxxx-xxxx-xxxx 2026-12-31 parser not reachable from the server; upgrade blocked on upstream
+```
+
+Run it locally from any repository:
+
+```bash
+python3 <path-to-berty-cicd>/scripts/check-vulns.py          # exit 0 clean, 1 blocking, 2 could not run
+python3 <path-to-berty-cicd>/scripts/test_check_vulns.py     # its offline tests
+```
+
 ### `security-audit.yml`
 
 Standalone audit workflow (also used internally by `build-and-push.yml`).
