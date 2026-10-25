@@ -222,20 +222,48 @@ def npm_audit(cwd, omit_dev):
     return data.get("vulnerabilities") or {}
 
 
+def npm_advisories(vulns, name, seen=None):
+    """The advisories behind one npm audit entry: its own, plus, for a package
+    flagged only through another, the advisories of the package it comes
+    through. Each is a dict with npm's url, title and severity."""
+    seen = seen if seen is not None else set()
+    if name in seen or name not in vulns:
+        return []
+    seen.add(name)
+    out = []
+    for via in vulns[name].get("via", []):
+        if isinstance(via, dict):
+            out.append(via)
+        elif isinstance(via, str):
+            out += npm_advisories(vulns, via, seen)
+    return out
+
+
 def node_findings(root, d):
+    """One finding per advisory, so ignoring one advisory never hides another
+    on the same package."""
     proj = rel(root, d)
     shipped = npm_audit(d, omit_dev=True)
     everything = npm_audit(d, omit_dev=False)
     out = []
     for name, v in everything.items():
-        advisories = [x for x in v.get("via", []) if isinstance(x, dict)]
-        ids = [a["url"].rsplit("/", 1)[-1] for a in advisories if a.get("url")] or [name]
-        title = advisories[0].get("title", "") if advisories else "through " + ", ".join(
-            x for x in v.get("via", []) if isinstance(x, str))
         fix = v.get("fixAvailable")
         fix = "%s %s" % (fix.get("name", ""), fix.get("version", "")) if isinstance(fix, dict) else ""
-        out.append(Finding(proj, "npm", name, v.get("range", ""), ids, (v.get("severity") or "unknown").lower(),
-                           name in shipped, title, fix))
+        direct = any(isinstance(x, dict) for x in v.get("via", []))
+        advisories = npm_advisories(everything, name)
+        unique = {}
+        for a in advisories:
+            unique.setdefault(a.get("url") or a.get("title") or name, a)
+        if not unique:
+            # npm named no advisory at all; the package is the only handle.
+            out.append(Finding(proj, "npm", name, v.get("range", ""), [name], (v.get("severity") or "unknown").lower(),
+                               name in shipped, "", fix))
+            continue
+        for key, a in unique.items():
+            gid = a["url"].rsplit("/", 1)[-1] if a.get("url") else key
+            title = a.get("title", "") if direct else "through %s: %s" % (a.get("name", "?"), a.get("title", ""))
+            out.append(Finding(proj, "npm", name, v.get("range", ""), [gid], (a.get("severity") or "unknown").lower(),
+                               name in shipped, title, fix))
     return out
 
 

@@ -40,6 +40,26 @@ class Blocking(unittest.TestCase):
         self.assertIn("fix: 2.10.1", g.line())
 
 
+class NpmAdvisories(unittest.TestCase):
+    VULNS = {
+        "expo": {"severity": "high", "via": ["@expo/cli"], "range": "*"},
+        "@expo/cli": {"severity": "high", "via": ["node-forge", "zod"], "range": "*"},
+        "node-forge": {"severity": "high", "via": [
+            {"url": "https://github.com/advisories/GHSA-aaaa", "title": "forge", "severity": "high", "name": "node-forge"}]},
+        "zod": {"severity": "high", "via": [
+            {"url": "https://github.com/advisories/GHSA-bbbb", "title": "zod", "severity": "high", "name": "zod"},
+            {"url": "https://github.com/advisories/GHSA-cccc", "title": "zod2", "severity": "moderate", "name": "zod"}]},
+    }
+
+    def test_a_package_flagged_through_others_carries_their_advisories(self):
+        urls = sorted(a["url"].rsplit("/", 1)[-1] for a in cv.npm_advisories(self.VULNS, "expo"))
+        self.assertEqual(urls, ["GHSA-aaaa", "GHSA-bbbb", "GHSA-cccc"])
+
+    def test_cycles_terminate(self):
+        vulns = {"a": {"via": ["b"]}, "b": {"via": ["a"]}}
+        self.assertEqual(cv.npm_advisories(vulns, "a"), [])
+
+
 class IgnoreFile(unittest.TestCase):
     def read(self, text, today=datetime.date(2026, 10, 25)):
         with tempfile.TemporaryDirectory() as d:
