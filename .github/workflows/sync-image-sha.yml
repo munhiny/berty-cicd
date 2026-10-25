@@ -16,7 +16,10 @@ on:
         required: true
         type: string
       image-name:
-        description: 'Image name as it appears in the manifest, e.g. my-app'
+        description: >
+          Image name as it appears in the manifest, e.g. my-app. Several names
+          separated by spaces (e.g. "app-backend app-frontend") are all pinned
+          to the same SHA in one pull request.
         required: true
         type: string
       registry-host:
@@ -100,12 +103,16 @@ jobs:
           git fetch origin --prune
           DEFAULT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           SHORT_SHA="${IMAGE_SHA:0:12}"
-          BRANCH="k8s/bump-${IMAGE_NAME}-${SHORT_SHA}"
+          # The first image name keys the branch, so every sync of this app
+          # shares the k8s/bump-<first-name>- prefix (used to supersede below).
+          FIRST_NAME="${IMAGE_NAME%% *}"
+          BRANCH="k8s/bump-${FIRST_NAME}-${SHORT_SHA}"
 
           git checkout -b "$BRANCH" "origin/${DEFAULT_BRANCH}"
 
           echo "default_branch=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "branch_prefix=k8s/bump-${FIRST_NAME}-" >> "$GITHUB_OUTPUT"
 
       - name: Bump manifest image tag
         if: steps.token-check.outputs.configured == 'true'
@@ -127,27 +134,24 @@ jobs:
           escape_regex() { printf '%s' "$1" | sed -e 's/[.[\*^$|]/\\&/g'; }
           escape_replacement() { printf '%s' "$1" | sed -e 's/[\&|]/\\&/g'; }
 
-          PREFIX="${REGISTRY_HOST}/${IMAGE_NAME}:"
-          ESCAPED_PREFIX=$(escape_regex "$PREFIX")
-          SEARCH_PATTERN="${ESCAPED_PREFIX}[0-9a-f]{40}"
+          for NAME in $IMAGE_NAME; do
+            PREFIX="${REGISTRY_HOST}/${NAME}:"
+            ESCAPED_PREFIX=$(escape_regex "$PREFIX")
+            SEARCH_PATTERN="${ESCAPED_PREFIX}[0-9a-f]{40}"
 
-          if ! grep -Eq "$SEARCH_PATTERN" "$MANIFEST_PATH"; then
-            echo "::error::no line matching '${PREFIX}<40-char-sha>' found in $MANIFEST_PATH"
-            exit 1
-          fi
+            if ! grep -Eq "$SEARCH_PATTERN" "$MANIFEST_PATH"; then
+              echo "::error::no line matching '${PREFIX}<40-char-sha>' found in $MANIFEST_PATH"
+              exit 1
+            fi
 
-          if grep -Fq "${PREFIX}${IMAGE_SHA}" "$MANIFEST_PATH"; then
+            REPLACEMENT=$(escape_replacement "${PREFIX}${IMAGE_SHA}")
+            sed -i -E "s|${SEARCH_PATTERN}|${REPLACEMENT}|" "$MANIFEST_PATH"
+          done
+
+          if git diff --quiet -- "$MANIFEST_PATH"; then
             echo "::notice::$MANIFEST_PATH is already pinned to $IMAGE_SHA -- nothing to sync"
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
-          fi
-
-          REPLACEMENT=$(escape_replacement "${PREFIX}${IMAGE_SHA}")
-          sed -i -E "s|${SEARCH_PATTERN}|${REPLACEMENT}|" "$MANIFEST_PATH"
-
-          if git diff --quiet -- "$MANIFEST_PATH"; then
-            echo "::error::edit produced no change in $MANIFEST_PATH -- refusing to open an empty pull request"
-            exit 1
           fi
 
           echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -166,7 +170,7 @@ jobs:
           git config user.name "gitops-sync-bot"
           git config user.email "gitops-sync-bot@users.noreply.github.com"
           git add "$MANIFEST_PATH"
-          git commit -m "chore(${IMAGE_NAME}): bump image to ${IMAGE_SHA}"
+          git commit -m "chore(${IMAGE_NAME// /, }): bump image to ${IMAGE_SHA}"
 
           # The branch name is content-addressed (image name + sha), so it
           # only ever holds this one mechanical commit. Force-pushing here
@@ -180,6 +184,7 @@ jobs:
           GH_TOKEN: ${{ secrets.gitops-token }}
           GITOPS_REPO: ${{ inputs.gitops-repo }}
           BRANCH: ${{ steps.prepare.outputs.branch }}
+          BRANCH_PREFIX: ${{ steps.prepare.outputs.branch_prefix }}
           DEFAULT_BRANCH: ${{ steps.prepare.outputs.default_branch }}
           IMAGE_NAME: ${{ inputs.image-name }}
           IMAGE_SHA: ${{ inputs.image-sha }}
@@ -189,7 +194,7 @@ jobs:
           set -euo pipefail
 
           SHORT_SHA="${IMAGE_SHA:0:12}"
-          TITLE="chore: bump ${IMAGE_NAME} to ${SHORT_SHA}"
+          TITLE="chore: bump ${IMAGE_NAME// /, } to ${SHORT_SHA}"
           BODY="Bumps \`${MANIFEST_PATH}\` to the image built from ${SOURCE_REPO}@${IMAGE_SHA}.
 
           The tag was pushed to the registry by the producing build before this pull request was opened."
@@ -199,9 +204,22 @@ jobs:
           if [ -n "$EXISTING" ]; then
             gh pr edit "$EXISTING" --repo "$GITOPS_REPO" --title "$TITLE" --body "$BODY"
             echo "::notice::updated existing pull request #$EXISTING"
+            NUMBER="$EXISTING"
           else
-            gh pr create --repo "$GITOPS_REPO" --base "$DEFAULT_BRANCH" --head "$BRANCH" --title "$TITLE" --body "$BODY"
+            URL=$(gh pr create --repo "$GITOPS_REPO" --base "$DEFAULT_BRANCH" --head "$BRANCH" --title "$TITLE" --body "$BODY")
+            NUMBER="${URL##*/}"
           fi
+
+          # Only the newest image of an app should be waiting to deploy: an
+          # older bump PR for the same app would either conflict with this one
+          # or, merged after it, roll the app back. Close the older ones.
+          gh pr list --repo "$GITOPS_REPO" --state open --json number,headRefName \
+            --jq ".[] | select(.headRefName | test(\"^${BRANCH_PREFIX}[0-9a-f]{12}\$\")) | select(.headRefName != \"${BRANCH}\") | .number" |
+          while read -r OLD; do
+            gh pr close "$OLD" --repo "$GITOPS_REPO" --delete-branch \
+              --comment "Superseded by #${NUMBER} (a newer image of the same app)."
+            echo "::notice::closed superseded pull request #$OLD"
+          done
 
       - name: Summary
         if: always()

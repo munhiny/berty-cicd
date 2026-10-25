@@ -103,6 +103,13 @@ bumps a manifest's image tag to the commit SHA that was just built and
 pushed. Intended to run as a job in the same workflow as
 `build-and-push.yml`, after the build succeeds.
 
+Only the newest image of an app waits to deploy: when it opens a pull request
+it closes any older open bump pull request for the same app (branch
+`k8s/bump-<first image name>-<12-char sha>`). In munhiny/berty-k8s a bump
+pull request that changes nothing but image tags merges itself once its CI
+is green (`.github/workflows/auto-merge-image-bumps.yml` there), so a merge
+to an app's main deploys the new image without a manual step.
+
 **Inputs:**
 
 | Input | Required | Default | Description |
@@ -110,7 +117,7 @@ pushed. Intended to run as a job in the same workflow as
 | `runner-label` | yes | - | Self-hosted runner label (ARC scale set name) |
 | `gitops-repo` | yes | - | GitOps repo to open the pull request against, e.g. `owner/repo` |
 | `manifest-path` | yes | - | Path within the GitOps repo to the manifest, e.g. `apps/my-app/app.yaml` |
-| `image-name` | yes | - | Image name as it appears in the manifest, e.g. `my-app` |
+| `image-name` | yes | - | Image name as it appears in the manifest, e.g. `my-app`; several names separated by spaces are pinned to the same SHA in one pull request (e.g. `my-app-backend my-app-frontend`) |
 | `registry-host` | yes | - | Registry host prefix as written in the manifest, e.g. `registry.local:5000` |
 | `image-sha` | no | `github.sha` | Full 40-character commit SHA to pin the manifest to |
 
