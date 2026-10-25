@@ -15,3 +15,8 @@ jobs:
       image-name: my-python-app
       language: python
       audit-level: high
+
+  vuln-check:
+    uses: munhiny/berty-cicd/.github/workflows/vuln-check.yml@main
+    with:
+      runner-label: arc-runner-my-app

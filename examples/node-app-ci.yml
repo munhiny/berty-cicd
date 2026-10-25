@@ -15,3 +15,8 @@ jobs:
       image-name: my-node-app
       language: node
       audit-level: high
+
+  vuln-check:
+    uses: munhiny/berty-cicd/.github/workflows/vuln-check.yml@main
+    with:
+      runner-label: arc-runner-my-app

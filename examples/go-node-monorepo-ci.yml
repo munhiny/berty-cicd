@@ -18,3 +18,8 @@ jobs:
       go-working-directory: .   # set to the subdir holding go.mod for multi-image repos
       dockerfile: deploy/Dockerfile
       audit-level: high
+
+  vuln-check:
+    uses: munhiny/berty-cicd/.github/workflows/vuln-check.yml@main
+    with:
+      runner-label: arc-runner-my-app
