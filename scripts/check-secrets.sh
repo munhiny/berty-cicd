@@ -58,8 +58,9 @@ if ! git rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
-  echo "check-secrets: base ref '$BASE_REF' not found, skipping" >&2
-  exit 0
+  # Not a pass: a gate that cannot see its base has not checked anything.
+  echo "check-secrets: base ref '$BASE_REF' not found (fetch it, or pass the right ref)" >&2
+  exit 2
 fi
 
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -109,6 +110,20 @@ PLACEHOLDER_ALLOW='(example|placeholder|REPLACE_ME|TODO|FIXME|correct horse batt
 # straight after the first word and is not flagged. Empty strings are not flagged.
 SECRET_RE="${SECRET_KEYS}[\"']?[[:space:]]*[:=][[:space:]]*([\"'][^\"'[:space:]<{\$]{6,}|[A-Za-z0-9+/_-]{8,}([[:space:],;]|$))"
 
+# Files whose "secrets" are fakes by nature: test files (fake credentials
+# for fake servers) and the learnings log (quotes of error messages that
+# name token files). Only the assignment check skips them; MAC addresses
+# and PEM blocks are still scanned there.
+assign_exempt() {
+  case "$1" in
+    tests/*|test/*|*/tests/*|*/test/*) return 0 ;;
+  esac
+  case "$(basename "$1")" in
+    test_*|*_test.*|LEARNINGS.md) return 0 ;;
+  esac
+  return 1
+}
+
 for f in $FILES; do
   [ -f "$f" ] || continue
 
@@ -129,7 +144,7 @@ for f in $FILES; do
   #    The allow-list is matched against the line content only, never the
   #    file path: a path containing "example" or "TODO" must not exempt
   #    every line in the file.
-  if grep -nE -i "$SECRET_RE" "$f" \
+  if ! assign_exempt "$f" && grep -nE -i "$SECRET_RE" "$f" \
       | awk -v f="$f" -v re="$PLACEHOLDER_ALLOW" '{ c = $0; sub(/^[0-9]+:/, "", c); if (tolower(c) !~ tolower(re)) print f ":" $0 }' > "$TMP" \
       && [ -s "$TMP" ]; then
     echo "FAIL Potential secret assignment in $f:"
