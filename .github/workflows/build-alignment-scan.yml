@@ -1,0 +1,60 @@
+# Builds the nightly alignment-scan image.
+#
+# Like the diffusion-pipe image, this is CI tooling rather than a product: a
+# script plus pinned analysis tools, run as a CronJob in the cluster. It lives
+# here so it needs no repository and no runner scale set of its own.
+#
+# Path-filtered so ordinary workflow edits in this repo do not rebuild it.
+name: Build alignment-scan image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'images/alignment-scan/**'
+      - '.github/workflows/build-alignment-scan.yml'
+  pull_request:
+    paths:
+      - 'images/alignment-scan/**'
+      - '.github/workflows/build-alignment-scan.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: arc-runner-berty-cicd
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+      - name: Run the scan tests
+        run: uv run --no-project --python 3.12 images/alignment-scan/test_scan.py
+
+  build:
+    needs: test
+    uses: ./.github/workflows/build-and-push.yml
+    with:
+      runner-label: arc-runner-berty-cicd
+      image-name: alignment-scan
+      context: images/alignment-scan
+      dockerfile: images/alignment-scan/Dockerfile
+      registry: ${{ vars.REGISTRY }}
+      # The image is a script plus pinned tools; the tests above are its gate.
+      skip-audit: true
+
+  vuln:
+    # The pull request vulnerability gate for what the image ships.
+    uses: ./.github/workflows/vuln-check.yml
+    with:
+      runner-label: arc-runner-berty-cicd
+
+  sync:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/sync-image-sha.yml
+    with:
+      runner-label: arc-runner-berty-cicd
+      gitops-repo: munhiny/berty-k8s
+      manifest-path: apps/alignment-scan/cronjob.yaml
+      image-name: alignment-scan
+      registry-host: registry.local:5000
+    secrets:
+      gitops-token: ${{ secrets.K8S_SYNC_TOKEN }}

@@ -7,6 +7,15 @@ the desktop scaled down waiting on it.
 
 `diffusion-pipe/` is the worked example. Copy its shape.
 
+## Other images in this directory
+
+`alignment-scan/` is a small CPU image, not a GPU one: a Python 3.12 slim base
+with git, uv, shellcheck, jscpd and vulture, every one pinned by digest or by
+hash so the CronJob needs no package index at run time. `scan.py` is the
+entrypoint and `test_scan.py` is run by the workflow before the build. It runs
+as uid 1000, reads the repositories it scans as read-only inputs and writes
+only under its data directory. Build: `.github/workflows/build-alignment-scan.yml`.
+
 ## The shape
 
 ```dockerfile
