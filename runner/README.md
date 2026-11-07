@@ -67,7 +67,7 @@ template:
             mountPath: /var/run
 ```
 
-**Important:** Do not use `containerMode.type: dind` with custom args — the chart overrides your DinD container config. Define the full pod template manually instead.
+**Important:** Do not use `containerMode.type: dind` with custom args - the chart overrides your DinD container config. Define the full pod template manually instead.
 
 ## Runner capabilities
 

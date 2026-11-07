@@ -136,7 +136,7 @@ nothing.
 If a large fetch dies partway with `Connection reset by peer` at a suspiciously
 consistent time, that is an MTU problem in the runner's Docker-in-Docker
 daemon, not the transfer size - see
-`.claude/rules/nested-container-networks-must-match-pod-mtu.md` in the k8s
+the rule on nested container networks matching the pod MTU in the k8s
 repo. It is fixed cluster-wide now, but the symptom is worth recognising.
 
 ## Tags
