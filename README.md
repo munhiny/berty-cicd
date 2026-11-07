@@ -6,8 +6,8 @@ Reusable GitHub Actions workflows for multi-language security auditing, containe
 
 ```
 .github/workflows/     Reusable workflows (called by app repos)
-workflows/shared/      Source copies of shared workflows
-examples/              Drop-in CI configs for app repos
+scripts/               check-vulns.py and check-secrets.sh (run by CI and by the workstation)
+examples/              Drop-in caller for app repos (app-ci.yml)
 runner/                Self-hosted GitHub Actions runner setup (ARC)
 ```
 
@@ -15,11 +15,13 @@ runner/                Self-hosted GitHub Actions runner setup (ARC)
 
 Auto-detects project language or specify explicitly. Supports comma-separated values for monorepos (e.g. `go,node`).
 
-| Language | Security | Lint | Format | Tests |
-|----------|----------|------|--------|-------|
-| Node.js | `npm audit` | `eslint` (if configured) | — | — |
-| Go | `govulncheck` | — | — | `go test` |
-| Python (uv) | `pip-audit` | `ruff check` | `ruff format` | `pytest` |
+| Language | Lint | Format | Tests |
+|----------|------|--------|-------|
+| Node.js | `eslint` (if configured) | - | - |
+| Go | - | - | `go test` |
+| Python (uv) | `ruff check` | `ruff format` | `pytest` |
+
+Vulnerability scanning is not part of this job; `vuln-check.yml` does it.
 
 ### Python pipeline (uv-based)
 
@@ -28,31 +30,30 @@ Installs `--group dev` dependencies so all dev tools are available.
 
 Pipeline order:
 1. `uv sync --frozen --group dev`
-2. `ruff check .` — lint
-3. `ruff format --check .` — formatting
-4. `isort --check-only .` — import sorting (if in dev deps)
-5. `pytest` — tests (if in dev deps)
-6. `pip-audit` — vulnerability scan
-7. `uv lock --check` — lockfile integrity
+2. `ruff check .` - lint
+3. `ruff format --check .` - formatting
+4. `isort --check-only .` - import sorting (if in dev deps)
+5. `pytest` - tests (if in dev deps)
+6. `uv lock --check` - lockfile integrity
 
 ## Shared Workflows
 
 ### `build-and-push.yml`
 
-Full pipeline: language detection → security audit → lint → test → Docker build → push to registry.
+Full pipeline: language detection -> lint -> test -> Docker build -> push to registry.
 
 **Inputs:**
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `runner-label` | yes | — | Self-hosted runner label (ARC scale set name) |
-| `image-name` | yes | — | Docker image name |
+| `runner-label` | yes | - | Self-hosted runner label (ARC scale set name) |
+| `image-name` | yes | - | Docker image name |
 | `language` | no | `auto` | `node`, `go`, `python`, or comma-separated |
 | `dockerfile` | no | `./Dockerfile` | Dockerfile path |
 | `context` | no | `.` | Docker build context |
 | `registry` | no | `localhost:5000` | Container registry (use IP for DinD) |
-| `audit-level` | no | `high` | npm audit severity threshold |
-| `skip-audit` | no | `false` | Skip audit step |
+| `audit-level` | no | `high` | Deprecated, accepted and ignored |
+| `skip-audit` | no | `false` | Skip the lint and test job |
 | `node-working-directory` | no | `.` | Working dir for Node.js (monorepo support) |
 | `go-working-directory` | no | `.` | Working dir for Go, i.e. where `go.mod` lives (multi-image repo support) |
 
@@ -87,14 +88,6 @@ Run it locally from any repository:
 python3 <path-to-berty-cicd>/scripts/check-vulns.py          # exit 0 clean, 1 blocking, 2 could not run
 python3 <path-to-berty-cicd>/scripts/test_check_vulns.py     # its offline tests
 ```
-
-### `security-audit.yml`
-
-Standalone audit workflow (also used internally by `build-and-push.yml`).
-
-### `deploy-notify.yml`
-
-Post-build: verify image in registry, trigger GitOps reconciliation, report status.
 
 ### `sync-image-sha.yml`
 
@@ -179,55 +172,58 @@ jobs:
 
 ## Usage
 
-In your app repo, create `.github/workflows/ci.yml`:
+### `app-ci.yml`
 
-### Node.js app
+One call for an app repository: build, vulnerability check and image sync.
+The jobs are `build` (build-and-push.yml), `vuln` (vuln-check.yml) and `sync`
+(sync-image-sha.yml, only on a push to main, after `build`). The runner is
+`arc-runner-<app>` unless `runner-label` is set.
+
 ```yaml
 jobs:
   ci:
-    uses: <owner>/cicd/.github/workflows/build-and-push.yml@main
+    uses: munhiny/berty-cicd/.github/workflows/app-ci.yml@main
     with:
-      runner-label: arc-runner-my-node-app
-      image-name: my-node-app
-      language: node
+      app: my-app
+      manifest-path: apps/my-app/app.yaml
+    secrets:
+      k8s-sync-token: ${{ secrets.K8S_SYNC_TOKEN }}
 ```
 
-### Go app
-```yaml
-jobs:
-  ci:
-    uses: <owner>/cicd/.github/workflows/build-and-push.yml@main
-    with:
-      runner-label: arc-runner-my-go-app
-      image-name: my-go-app
-      language: go
-```
+**Inputs:**
 
-### Go + Node monorepo
-```yaml
-jobs:
-  ci:
-    uses: <owner>/cicd/.github/workflows/build-and-push.yml@main
-    with:
-      runner-label: arc-runner-my-app
-      image-name: my-app
-      language: go,node
-      node-working-directory: web
-      dockerfile: deploy/Dockerfile
-```
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `app` | yes | - | Image name as in the manifest; names the runner `arc-runner-<app>` |
+| `manifest-path` | yes | - | Manifest path in the GitOps repo holding the image line |
+| `runner-label` | no | `arc-runner-<app>` | ARC scale set, when the repository and image names differ |
+| `language` | no | `auto` | `node`, `go`, `python`, or comma-separated |
+| `context` | no | `.` | Docker build context |
+| `dockerfile` | no | `./Dockerfile` | Dockerfile path |
+| `node-working-directory` | no | `.` | Working dir for Node.js |
+| `go-working-directory` | no | `.` | Working dir for Go |
+| `platforms` | no | empty | Comma-separated build platforms; empty is single-arch |
+| `registry` | no | `vars.REGISTRY` | Registry the build pushes to |
+| `registry-host` | no | `registry.local:5000` | Registry host as written in the manifest |
+| `gitops-repo` | no | `munhiny/berty-k8s` | GitOps repository for the bump pull request |
+| `audit-level`, `skip-audit` | no | `high`, `false` | Passed through to build-and-push.yml |
 
-### Python app (uv)
-```yaml
-jobs:
-  ci:
-    uses: <owner>/cicd/.github/workflows/build-and-push.yml@main
-    with:
-      runner-label: arc-runner-my-python-app
-      image-name: my-python-app
-      language: python
-```
+**Secrets:** `k8s-sync-token` (optional) is passed to sync-image-sha.yml as
+`gitops-token`; unset, the sync is skipped with a warning. The wrapper does
+not fit a repository with its own test jobs gating the build, or one that
+builds several images; those keep calling the three workflows directly (see
+the sections above). `examples/app-ci.yml` is the caller to copy.
 
-See `examples/` for complete workflow files.
+## Scripts
+
+- `scripts/check-vulns.py`: the vulnerability gate (see `vuln-check.yml`).
+- `scripts/check-secrets.sh [--profile code|network] <base-ref>`: scans files
+  changed since `<base-ref>` for secret assignments and private key blocks
+  (the `network` profile adds MAC addresses and `psk=`). Exit 0 clean, 1
+  violations, 2 misuse. Run by CI and from the workstation.
+
+This repository's own CI (`.github/workflows/ci.yml`) runs the offline tests
+of `check-vulns.py` and shellchecks `scripts/*.sh`.
 
 ## Self-hosted Runner
 

@@ -32,7 +32,7 @@ on:
         type: string
         default: 'auto'
       audit-level:
-        description: 'Security audit severity threshold'
+        description: 'Deprecated, accepted and ignored: vulnerability scanning moved to vuln-check.yml'
         required: false
         type: string
         default: 'high'
@@ -45,7 +45,7 @@ on:
         type: string
         default: ''
       skip-audit:
-        description: 'Skip security audit'
+        description: 'Skip the lint and test job'
         required: false
         type: boolean
         default: false
@@ -87,17 +87,12 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Node — install dependencies
+      - name: Node - install dependencies
         if: contains(steps.detect.outputs.langs, 'node')
         working-directory: ${{ inputs.node-working-directory }}
         run: npm ci --ignore-scripts
 
-      - name: Node — npm audit
-        if: contains(steps.detect.outputs.langs, 'node')
-        working-directory: ${{ inputs.node-working-directory }}
-        run: npm audit --audit-level=${{ inputs.audit-level }} || true
-
-      - name: Node — lint
+      - name: Node - lint
         if: contains(steps.detect.outputs.langs, 'node')
         working-directory: ${{ inputs.node-working-directory }}
         run: |
@@ -113,21 +108,14 @@ jobs:
         with:
           go-version-file: ${{ inputs.go-working-directory }}/go.mod
 
-      - name: Go — govulncheck
-        if: contains(steps.detect.outputs.langs, 'go')
-        working-directory: ${{ inputs.go-working-directory }}
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./... || true
-
-      - name: Go — verify modules
+      - name: Go - verify modules
         if: contains(steps.detect.outputs.langs, 'go')
         working-directory: ${{ inputs.go-working-directory }}
         run: |
           go mod verify
           go mod tidy -diff 2>&1 || echo "::warning::go.mod/go.sum not tidy"
 
-      - name: Go — test
+      - name: Go - test
         if: contains(steps.detect.outputs.langs, 'go')
         working-directory: ${{ inputs.go-working-directory }}
         run: |
@@ -138,11 +126,11 @@ jobs:
           go test ./...
 
       # --- Python ---
-      - name: Python — install uv
+      - name: Python - install uv
         if: contains(steps.detect.outputs.langs, 'python')
         uses: astral-sh/setup-uv@v4
 
-      - name: Python — install deps
+      - name: Python - install deps
         if: contains(steps.detect.outputs.langs, 'python')
         run: |
           if [ -f uv.lock ]; then
@@ -153,24 +141,18 @@ jobs:
             uv venv && uv pip install -r requirements.txt
           fi
 
-      - name: Python — ruff lint + format
+      - name: Python - ruff lint + format
         if: contains(steps.detect.outputs.langs, 'python')
         run: |
           uv run ruff check . || true
           uv run ruff format --check . || true
 
-      - name: Python — pytest
+      - name: Python - pytest
         if: contains(steps.detect.outputs.langs, 'python')
         run: |
           if uv run python -c "import pytest" 2>/dev/null; then
             uv run pytest
           fi
-
-      - name: Python — pip-audit
-        if: contains(steps.detect.outputs.langs, 'python')
-        run: |
-          uv tool install pip-audit
-          pip-audit || true
 
   build:
     needs: [audit]
