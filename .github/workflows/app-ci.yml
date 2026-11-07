@@ -1,0 +1,130 @@
+name: App CI (build, vulnerability check, image sync)
+
+# One call replaces the build / vuln-check / sync trio an app repository
+# repeats:
+#   build - build-and-push.yml, on pushes and pull requests
+#   vuln  - vuln-check.yml, on pushes and pull requests
+#   sync  - sync-image-sha.yml, only on a push to main, after build
+#
+# Caller:
+#   jobs:
+#     ci:
+#       uses: munhiny/berty-cicd/.github/workflows/app-ci.yml@main
+#       with:
+#         app: scrape-engine
+#         manifest-path: apps/scrape-engine/base/cronjob.yaml
+#       secrets:
+#         k8s-sync-token: ${{ secrets.K8S_SYNC_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: 'Image name as it appears in the manifest; also names the runner arc-runner-<app> unless runner-label is set'
+        required: true
+        type: string
+      manifest-path:
+        description: 'Manifest path in the GitOps repo holding the image line'
+        required: true
+        type: string
+      runner-label:
+        description: 'ARC scale set; default arc-runner-<app>. Set when the repository and image names differ'
+        required: false
+        type: string
+        default: ''
+      language:
+        description: 'Comma-separated languages: node, go, python, or auto'
+        required: false
+        type: string
+        default: auto
+      context:
+        description: 'Docker build context'
+        required: false
+        type: string
+        default: '.'
+      dockerfile:
+        description: 'Dockerfile path'
+        required: false
+        type: string
+        default: './Dockerfile'
+      node-working-directory:
+        description: 'Node working directory (monorepos)'
+        required: false
+        type: string
+        default: '.'
+      go-working-directory:
+        description: 'Go working directory (multi-image repositories)'
+        required: false
+        type: string
+        default: '.'
+      platforms:
+        description: 'Comma-separated build platforms; empty is a plain single-arch build'
+        required: false
+        type: string
+        default: ''
+      registry:
+        description: 'Registry the build pushes to; empty uses the repository variable REGISTRY'
+        required: false
+        type: string
+        default: ''
+      registry-host:
+        description: 'Registry host as written in the manifest'
+        required: false
+        type: string
+        default: 'registry.local:5000'
+      gitops-repo:
+        description: 'GitOps repository the bump pull request opens against'
+        required: false
+        type: string
+        default: 'munhiny/berty-k8s'
+      audit-level:
+        description: 'Deprecated, passed to build-and-push.yml, which ignores it'
+        required: false
+        type: string
+        default: 'high'
+      skip-audit:
+        description: 'Skip the lint and test job of the build'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      k8s-sync-token:
+        description: 'Fine-grained PAT for the GitOps repository; unset skips the sync with a warning'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: munhiny/berty-cicd/.github/workflows/build-and-push.yml@main
+    with:
+      runner-label: ${{ inputs.runner-label || format('arc-runner-{0}', inputs.app) }}
+      image-name: ${{ inputs.app }}
+      language: ${{ inputs.language }}
+      context: ${{ inputs.context }}
+      dockerfile: ${{ inputs.dockerfile }}
+      node-working-directory: ${{ inputs.node-working-directory }}
+      go-working-directory: ${{ inputs.go-working-directory }}
+      platforms: ${{ inputs.platforms }}
+      registry: ${{ inputs.registry || vars.REGISTRY }}
+      audit-level: ${{ inputs.audit-level }}
+      skip-audit: ${{ inputs.skip-audit }}
+
+  vuln:
+    uses: munhiny/berty-cicd/.github/workflows/vuln-check.yml@main
+    with:
+      runner-label: ${{ inputs.runner-label || format('arc-runner-{0}', inputs.app) }}
+
+  sync:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: munhiny/berty-cicd/.github/workflows/sync-image-sha.yml@main
+    with:
+      runner-label: ${{ inputs.runner-label || format('arc-runner-{0}', inputs.app) }}
+      gitops-repo: ${{ inputs.gitops-repo }}
+      manifest-path: ${{ inputs.manifest-path }}
+      image-name: ${{ inputs.app }}
+      registry-host: ${{ inputs.registry-host }}
+    secrets:
+      gitops-token: ${{ secrets.k8s-sync-token }}

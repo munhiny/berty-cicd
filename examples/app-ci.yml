@@ -1,0 +1,25 @@
+# Drop-in caller for an app repository: build, vulnerability check and image
+# sync in one call. Save as .github/workflows/ci.yml.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: munhiny/berty-cicd/.github/workflows/app-ci.yml@main
+    with:
+      app: my-app
+      manifest-path: apps/my-app/app.yaml
+      # runner-label: arc-runner-my-repo   # when the repository name differs from the image name
+      # language: go,node                  # default auto
+      # node-working-directory: web
+      # dockerfile: deploy/Dockerfile
+      # platforms: linux/amd64,linux/arm64
+    secrets:
+      k8s-sync-token: ${{ secrets.K8S_SYNC_TOKEN }}
