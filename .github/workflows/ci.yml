@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check-vulns-tests:
+    runs-on: arc-runner-berty-cicd
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - name: check-vulns offline tests
+        run: uv run --no-project --python 3.12 scripts/test_check_vulns.py
+
+  shellcheck:
+    runs-on: arc-runner-berty-cicd
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: shellcheck
+        # The runner has Docker (sidecar) and no shellcheck of its own.
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt koalaman/shellcheck-alpine:v0.10.0 \
+            shellcheck scripts/*.sh
