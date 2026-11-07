@@ -8,6 +8,7 @@ Reusable GitHub Actions workflows for multi-language security auditing, containe
 .github/workflows/     Reusable workflows (called by app repos)
 scripts/               check-vulns.py and check-secrets.sh (run by CI and by the workstation)
 examples/              Drop-in caller for app repos (app-ci.yml)
+images/                Container images built here because they have no repository of their own
 runner/                Self-hosted GitHub Actions runner setup (ARC)
 ```
 
@@ -213,6 +214,21 @@ jobs:
 not fit a repository with its own test jobs gating the build, or one that
 builds several images; those keep calling the three workflows directly (see
 the sections above). `examples/app-ci.yml` is the caller to copy.
+
+## Images
+
+`images/` holds container images that are CI tooling rather than a product and
+so have no repository of their own. `images/diffusion-pipe/` is the baked
+trainer image (see `images/README.md`). `images/alignment-scan/` is the nightly
+alignment scan: `scan.py` plus pinned jscpd, vulture, shellcheck, uv and git,
+run as a CronJob in the cluster. It clones the cluster repository and its
+associated repositories shallow, reports copied lines, dead code, shellcheck
+findings, unwired tests and layout drift, keeps the set of findings it has
+already seen, and pushes only what is new plus a daily heartbeat. When enabled,
+a second layer wakes the large model through the job broker and records one
+refactor proposal per new copied-lines cluster, cross-checked by the smaller
+models; it never applies code. `build-alignment-scan.yml` runs the image's
+tests, builds it, and on `main` opens the manifest bump pull request.
 
 ## Scripts
 
